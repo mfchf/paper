@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>MFCHF Browser Benchmark</title>
+  </head>
+  <body>
+    <pre id="out"></pre>
+    <script src="buffer.js"></script>
+    <script src="mfchf.min.js"></script>
+    <script>
+      const Buffer = buffer.Buffer;
+
+      const hms1 = async (data, message) => {
+        const key = await window.crypto.subtle.importKey(
+          "raw",
+          data,
+          {
+            name: "HMAC",
+            hash: { name: "SHA-1" },
+          },
+          false,
+          ["sign"]
+        );
+        const signature = await window.crypto.subtle.sign("HMAC", key, message);
+        return signature;
+      }
+
+      var logstr = "";
+
+      const log = (str) => {
+        logstr += str + "\n";
+      }
+
+      const out = document.getElementById('out');
+      const flush = () => {
+        console.log(logstr);
+        out.innerText += logstr;
+        logstr = "";
+      }
+
+      const clear = () => {
+        logstr = "";
+        console.clear();
+        out.innerText = "";
+      }
+
+      const times = {};
+      const start = (rn, name) => {
+        times[rn + " " + name] = performance.now();
+      }
+      const end = (rn, name) => {
+        log(rn + " " + name + " " + (performance.now() - times[rn + " " + name]));
+      }
+
+      const benchmark = async (rn) => {
+        rn = "mfchf " + rn;
+        const keyPair = await window.crypto.subtle.generateKey(
+          { hash: 'SHA-256', modulusLength: 2048, name: 'RSA-OAEP', publicExponent: new Uint8Array([1, 0, 1]) },
+          true,
+          ['encrypt', 'decrypt']
+        )
+        const init = await mfchf.setup.key([
+          await mfchf.setup.factors.password('password')
+        ], { kdf: 'hkdf' })
+
+        start(rn, "setup factor mfchf-hsha1")
+        const hmacsha1Setup = await mfchf.stage.factor.setup(mfchf.setup.factors.hmacsha1(), init.key)
+        end(rn, "setup factor mfchf-hsha1")
+
+        start(rn, "setup factor mfchf-hotp6")
+        const hotpSetup = await mfchf.stage.factor.setup(mfchf.setup.factors.hotp({ secret: Buffer.from('hello world') }), init.key)
+        end(rn, "setup factor mfchf-hotp6")
+
+        start(rn, "setup factor mfchf-ooba6")
+        const oobaSetup = await mfchf.stage.factor.setup(mfchf.setup.factors.ooba({ key: keyPair.publicKey, params: {} }), init.key)
+        end(rn, "setup factor mfchf-ooba6")
+
+        start(rn, "setup factor mfchf-totp6")
+        const totpSetup = await mfchf.stage.factor.setup(mfchf.setup.factors.totp({ secret: Buffer.from('hello world'), time: 1650430806597, window: 2920 }), init.key)
+        end(rn, "setup factor mfchf-totp6")
+
+        const setup = await mfchf.setup.key([
+          hmacsha1Setup, hotpSetup, oobaSetup, totpSetup
+        ], { kdf: 'hkdf' })
+
+        const secret = setup.outputs.hmacsha1.secret
+        const challenge = Buffer.from(setup.policy.factors[0].params.challenge, 'hex')
+        const response = await hms1(secret, challenge)
+        const next = setup.policy.factors[2].params.next
+        const decrypted = await window.crypto.subtle.decrypt({ name: 'RSA-OAEP' }, keyPair.privateKey, Buffer.from(next, 'hex'))
+        const json = JSON.parse(Buffer.from(decrypted).toString())
+        const code = json.code
+
+        start(rn, "verify factor mfchf-hsha1")
+        const hmacsha1 = await mfchf.stage.factor.derive(mfchf.derive.factors.hmacsha1(Buffer.from(response)), setup.policy.factors[0].params, setup.key)
+        end(rn, "verify factor mfchf-hsha1")
+
+        start(rn, "verify factor mfchf-hotp6")
+        const hotp = await mfchf.stage.factor.derive(mfchf.derive.factors.hotp(365287), setup.policy.factors[1].params, setup.key)
+        end(rn, "verify factor mfchf-hotp6")
+
+        start(rn, "verify factor mfchf-ooba6")
+        const ooba = await mfchf.stage.factor.derive(mfchf.derive.factors.ooba(code), setup.policy.factors[2].params, setup.key)
+        end(rn, "verify factor mfchf-ooba6")
+
+        start(rn, "verify factor mfchf-totp6")
+        const totp = await mfchf.stage.factor.derive(mfchf.derive.factors.totp(528258, { time: 1650430943604 }), setup.policy.factors[3].params, setup.key)
+        end(rn, "verify factor mfchf-totp6")
+
+        flush()
+      }
+
+      (async () => {
+        await benchmark(0);
+        clear();
+
+        const N = 100;
+        for (let i = 1; i <= N; i++) {
+          await benchmark(i);
+        }
+      })()
+    </script>
+  </body>
+</html>
